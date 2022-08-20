@@ -45,7 +45,23 @@ data class HttpResponsePattern(val headersPattern: HttpHeadersPattern = HttpHead
             }
         }
 
-    fun matchesMock(response: HttpResponse, resolver: Resolver) = matches(response, resolver)
+    fun matchesMock(response: HttpResponse, resolver: Resolver): Result {
+        val keyCheck = KeyCheck(patternKeyCheck = object: KeyErrorCheck {
+            override fun validate(pattern: Map<String, Any>, actual: Map<String, Any>): KeyError? = null
+
+            override fun validateList(pattern: Map<String, Any>, actual: Map<String, Any>): List<KeyError> =
+                emptyList()
+
+            override fun validateListCaseInsensitive(
+                pattern: Map<String, Pattern>,
+                actual: Map<String, StringValue>
+            ): List<KeyError> = emptyList()
+
+        })
+
+        val ignoreExtraKeys = resolver.copy(findKeyErrorCheck = keyCheck)
+        return matches(response, ignoreExtraKeys)
+    }
 
     private fun matchStatus(parameters: Pair<HttpResponse, Resolver>): MatchingResult<Pair<HttpResponse, Resolver>> {
         val (response, _) = parameters
