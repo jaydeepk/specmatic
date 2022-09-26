@@ -11,9 +11,32 @@ import java.net.URI
 const val QUERY_PARAMS_BREADCRUMB = "QUERY-PARAMS"
 
 data class URLMatcher(val queryPattern: Map<String, Pattern>, val pathPattern: List<URLPathPattern>, val path: String) {
+    fun encompasses(otherURLMatcher: URLMatcher, thisResolver: Resolver, otherResolver: Resolver): Result {
+        if(this.matches(HttpRequest("GET", URI.create(otherURLMatcher.path)), thisResolver) is Success)
+            return Success()
+
+        val mismatchedPartResults = this.pathPattern.zip(otherURLMatcher.pathPattern).map { (thisPathItem, otherPathItem) ->
+            thisPathItem.pattern.encompasses(otherPathItem, thisResolver, otherResolver)
+        }
+
+        val failures = mismatchedPartResults.filterIsInstance<Failure>()
+
+        if(failures.isEmpty())
+            return Success()
+
+        return Result.fromFailures(failures)
+    }
+
     fun matches(uri: URI, sampleQuery: Map<String, String> = emptyMap(), resolver: Resolver = Resolver()): Result {
         val httpRequest = HttpRequest(path = uri.path, queryParams = sampleQuery)
         return matches(httpRequest, resolver)
+    }
+
+    fun matchesPath(path: String, resolver: Resolver): Result {
+        return HttpRequest(path = path) to resolver to
+                ::matchesPath otherwise
+                ::handleError toResult
+                :: returnResult
     }
 
     fun matches(httpRequest: HttpRequest, resolver: Resolver): Result {
@@ -24,7 +47,7 @@ data class URLMatcher(val queryPattern: Map<String, Pattern>, val pathPattern: L
                 ::returnResult
     }
 
-    private fun matchesPath(parameters: Pair<HttpRequest, Resolver>): MatchingResult<Pair<HttpRequest, Resolver>> {
+    fun matchesPath(parameters: Pair<HttpRequest, Resolver>): MatchingResult<Pair<HttpRequest, Resolver>> {
         val (httpRequest, resolver) = parameters
         return when (val pathResult = matchesPath(URI(httpRequest.path!!), resolver)) {
             is Failure -> MatchFailure(pathResult.copy(failureReason = FailureReason.URLPathMisMatch))
@@ -32,12 +55,16 @@ data class URLMatcher(val queryPattern: Map<String, Pattern>, val pathPattern: L
         }
     }
 
-    private fun matchesQuery(parameters: Pair<HttpRequest, Resolver>): MatchingResult<Pair<HttpRequest, Resolver>> {
+    fun matchesQuery(parameters: Pair<HttpRequest, Resolver>): MatchingResult<Pair<HttpRequest, Resolver>> {
         val (httpRequest, resolver) = parameters
-        return when (val queryResult = matchesQuery(queryPattern, httpRequest.queryParams, resolver)) {
+        return when (val queryResult = matchesQuery(httpRequest, resolver)) {
             is Failure -> MatchFailure(queryResult.breadCrumb(QUERY_PARAMS_BREADCRUMB))
             else -> MatchSuccess(parameters)
         }
+    }
+
+    fun matchesQuery(httpRequest: HttpRequest, resolver: Resolver): Result {
+        return matchesQuery(queryPattern, httpRequest.queryParams, resolver)
     }
 
     private fun matchesPath(uri: URI, resolver: Resolver): Result {

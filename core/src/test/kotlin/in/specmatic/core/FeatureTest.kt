@@ -1,5 +1,6 @@
 package `in`.specmatic.core
 
+import `in`.specmatic.conversions.OpenApiSpecification
 import org.assertj.core.api.Assertions.assertThat
 import org.json.JSONObject
 import org.junit.jupiter.api.Assertions.*
@@ -214,7 +215,7 @@ class FeatureTest {
             In scenario "Get account balance"
             API: GET /balance -> 200
             
-              >> REQUEST.URL.QUERY-PARAMS.account-id
+              >> REQUEST.QUERY-PARAMS.account-id
               
                  Expected number, actual was "abc"
             """.trimIndent())
@@ -905,6 +906,26 @@ Then status 200
         test(HttpRequest("POST", path = "/number", body = toXMLNode("""<request>
         <number>10</number> </request>""")
         ))
+    }
+
+    @Test
+    fun `only one test is generated when all fields exist in the example and the generative flag is off`() {
+        val contract = parseGherkinStringToFeature("""
+            Feature: Test
+                Background:
+                    Given openapi openapi/three_keys_one_mandatory.yaml
+                    
+                Scenario: Test
+                    When POST /data
+                    Then status 200
+                    
+                    Examples:
+                    | id | name   |
+                    | 10 | Justin |
+        """.trimIndent(), "src/test/resources/test.spec")
+
+        val testScenarios: List<Scenario> = contract.generateContractTestScenarios(emptyList())
+        assertThat(testScenarios).hasSize(1)
     }
 
     companion object {

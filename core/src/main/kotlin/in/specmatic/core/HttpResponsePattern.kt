@@ -5,6 +5,8 @@ import `in`.specmatic.core.value.JSONObjectValue
 import `in`.specmatic.core.value.StringValue
 import `in`.specmatic.stub.softCastValueToXML
 
+const val DEFAULT_RESPONSE_CODE = 1000
+
 data class HttpResponsePattern(val headersPattern: HttpHeadersPattern = HttpHeadersPattern(), val status: Int = 0, val body: Pattern = EmptyStringPattern) {
     constructor(response: HttpResponse) : this(HttpHeadersPattern(response.headers.mapValues { stringToPattern(it.value, it.key) }), response.status, response.body.exactMatchElseType())
 
@@ -12,6 +14,19 @@ data class HttpResponsePattern(val headersPattern: HttpHeadersPattern = HttpHead
         return attempt(breadCrumb = "RESPONSE") {
             val value = softCastValueToXML(body.generate(resolver))
             val headers = headersPattern.generate(resolver).plus(SPECMATIC_RESULT_HEADER to "success").let { headers ->
+                when {
+                    !headers.containsKey("Content-Type") -> headers.plus("Content-Type" to value.httpContentType)
+                    else -> headers
+                }
+            }
+            HttpResponse(status, headers, value)
+        }
+    }
+
+    fun generateResponseWithAll(resolver: Resolver): HttpResponse {
+        return attempt(breadCrumb = "RESPONSE") {
+            val value = softCastValueToXML(body.generateWithAll(resolver))
+            val headers = headersPattern.generateWithAll(resolver).plus(SPECMATIC_RESULT_HEADER to "success").let { headers ->
                 when {
                     !headers.containsKey("Content-Type") -> headers.plus("Content-Type" to value.httpContentType)
                     else -> headers
@@ -64,6 +79,9 @@ data class HttpResponsePattern(val headersPattern: HttpHeadersPattern = HttpHead
     }
 
     private fun matchStatus(parameters: Pair<HttpResponse, Resolver>): MatchingResult<Pair<HttpResponse, Resolver>> {
+        if(status == DEFAULT_RESPONSE_CODE)
+            return MatchSuccess(parameters)
+
         val (response, _) = parameters
 
         val body = response.body

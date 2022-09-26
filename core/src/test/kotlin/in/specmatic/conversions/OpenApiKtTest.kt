@@ -5,10 +5,14 @@ import `in`.specmatic.core.*
 import `in`.specmatic.core.log.Verbose
 import `in`.specmatic.core.log.logger
 import `in`.specmatic.core.pattern.ContractException
+import `in`.specmatic.core.pattern.parsedJSONObject
+import `in`.specmatic.core.value.JSONObjectValue
+import `in`.specmatic.core.value.StringValue
 import `in`.specmatic.core.value.Value
 import `in`.specmatic.stub.HttpStub
 import `in`.specmatic.stub.createStubFromContracts
 import `in`.specmatic.test.TestExecutor
+import org.apache.http.HttpHeaders.AUTHORIZATION
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.Ignore
@@ -223,7 +227,7 @@ Background:
         """.trimIndent(), sourceSpecPath
         )
 
-        val results = feature.copy(enableNegativeTesting = true).executeTests(
+        val results = feature.copy(generativeTestingEnabled = true).executeTests(
             object : TestExecutor {
                 override fun execute(request: HttpRequest): HttpResponse {
                     flags["${request.path} executed"] = true
@@ -279,7 +283,7 @@ Background:
         val results = try {
             System.setProperty(Flags.negativeTestingFlag, "true")
 
-            feature.copy(enableNegativeTesting = true).executeTests(
+            feature.copy(generativeTestingEnabled = true).executeTests(
                 object : TestExecutor {
                     override fun execute(request: HttpRequest): HttpResponse {
                         flags["${request.path} executed"] = true
@@ -330,7 +334,7 @@ Background:
         """.trimIndent(), sourceSpecPath
         )
 
-        val results = feature.copy(enableNegativeTesting = true).executeTests(
+        val results = feature.copy(generativeTestingEnabled = true).executeTests(
             object : TestExecutor {
                 override fun execute(request: HttpRequest): HttpResponse {
                     flags["${request.path} executed"] = true
@@ -684,7 +688,7 @@ Background:
     }
 
     @Test
-    fun `should generate stub that returns authenticates with api key in header and query`() {
+    fun `should generate stub that authenticates with api key in header and query`() {
         createStubFromContracts(listOf("src/test/resources/openapi/apiKeyAuth.yaml")).use {
             val requestWithHeader = HttpRequest(
                 method = "GET",
@@ -721,7 +725,7 @@ Background:
   Given openapi openapi/unsupported-authentication.yaml
         """.trimIndent(), sourceSpecPath
             )
-        }.also { assertThat(it.message).isEqualTo("Specmatic only supports bearer and api key authentication (header, query) scheme at the moment") }
+        }.also { assertThat(it.message).isEqualTo("Specmatic only supports bearer and api key authentication (header, query) security schemes at the moment") }
     }
 
     @Test
@@ -735,7 +739,112 @@ Background:
   Given openapi openapi/apiKeyAuthCookie.yaml
         """.trimIndent(), sourceSpecPath
             )
-        }.also { assertThat(it.message).isEqualTo("Specmatic only supports bearer and api key authentication (header, query) scheme at the moment") }
+        }.also { assertThat(it.message).isEqualTo("Specmatic only supports bearer and api key authentication (header, query) security schemes at the moment") }
+    }
+
+    @Test
+    fun `should generate test with api key security scheme value from row`() {
+        val contract: Feature = parseGherkinStringToFeature(
+            """
+Feature: Authenticated
+
+  Background:
+    Given openapi openapi/authenticated.yaml
+  
+  Scenario: Header auth test
+    When GET /hello/(id:number)
+    Then status 200
+    
+    Examples:
+    | X-API-KEY | id |
+    | abc123    | 10 |
+        """.trimIndent(), sourceSpecPath
+        )
+
+        val contractTests = contract.generateContractTestScenarios(emptyList())
+        val result = executeTest(contractTests.single(), object: TestExecutor {
+            override fun execute(request: HttpRequest): HttpResponse {
+                assertThat(request.headers).containsEntry("X-API-KEY", "abc123")
+                return HttpResponse.OK("success")
+            }
+
+            override fun setServerState(serverState: Map<String, Value>) {
+
+            }
+
+        })
+
+        assertThat(result).isInstanceOf(Result.Success::class.java)
+    }
+
+    @Test
+    fun `should generate test with bearer auth security scheme value from row`() {
+        val contract: Feature = parseGherkinStringToFeature(
+            """
+Feature: Authenticated
+
+  Background:
+    Given openapi openapi/authenticated.yaml
+  
+  Scenario: Bearer auth test
+    When GET /hello/(id:number)
+    Then status 200
+    
+    Examples:
+    | Authorization | id |
+    | Bearer abc123 | 10 |
+        """.trimIndent(), sourceSpecPath
+        )
+
+        val contractTests = contract.generateContractTestScenarios(emptyList())
+        val result = executeTest(contractTests.single(), object: TestExecutor {
+            override fun execute(request: HttpRequest): HttpResponse {
+                assertThat(request.headers).containsEntry("Authorization", "Bearer abc123")
+                return HttpResponse.OK("success")
+            }
+
+            override fun setServerState(serverState: Map<String, Value>) {
+
+            }
+
+        })
+
+        assertThat(result).isInstanceOf(Result.Success::class.java)
+    }
+
+    @Test
+    fun `should generate test with query param api key auth security scheme value from row`() {
+        val contract: Feature = parseGherkinStringToFeature(
+            """
+Feature: Authenticated
+
+  Background:
+    Given openapi openapi/authenticated.yaml
+  
+  Scenario: Query param auth test
+    When GET /hello/(id:number)
+    Then status 200
+    
+    Examples:
+    | apiKey | id |
+    | abc123 | 10 |
+        """.trimIndent(), sourceSpecPath
+        )
+
+        val contractTests = contract.generateContractTestScenarios(emptyList())
+        val result = executeTest(contractTests.single(), object: TestExecutor {
+            override fun execute(request: HttpRequest): HttpResponse {
+                assertThat(request.queryParams).containsEntry("apiKey", "abc123")
+                return HttpResponse.OK("success")
+            }
+
+            override fun setServerState(serverState: Map<String, Value>) {
+
+            }
+
+        })
+
+        assertThat(result).isInstanceOf(Result.Success::class.java)
     }
 
     @Test
@@ -1024,7 +1133,7 @@ Background:
             }
         )
 
-        assertThat(flags["/pets POST executed"]).isEqualTo(2)
+        assertThat(flags["/pets POST executed"]).isEqualTo(1)
         assertThat(flags["/pets GET executed"]).isEqualTo(12)
         assertThat(flags["/petIds GET executed"]).isEqualTo(4)
         assertThat(flags["/pets/0 GET executed"]).isEqualTo(1)
@@ -1047,7 +1156,7 @@ Background:
         """.trimIndent(), sourceSpecPath
         )
 
-        val results = feature.copy(enableNegativeTesting = false).executeTests(
+        val results = feature.copy(generativeTestingEnabled = false).executeTests(
             object : TestExecutor {
                 override fun execute(request: HttpRequest): HttpResponse {
                     val flagKey = "${request.path} ${request.method} executed"
@@ -1370,6 +1479,92 @@ Scenario: zero should return not found
 
         assertThat(result).isInstanceOf(Result.Success::class.java)
         assertThat(executed).isTrue
+    }
+
+    @Test
+    fun `default response should be used to match an unexpected response status code and body in stub`() {
+        val openAPISpec = """
+            Feature: With default
+            
+            Background:
+              Given openapi openapi/with_default.yaml
+        """.trimIndent()
+
+        val feature = parseGherkinStringToFeature(openAPISpec, sourceSpecPath)
+
+        val result = feature.matches(HttpRequest("GET", "/hello/10"), HttpResponse(500, body = parsedJSONObject("""{"data": "information"}""")))
+
+        assertThat(result).isTrue
+    }
+
+    @Test
+    fun `default response should be used to match an unexpected response status code and body in a negative test`() {
+        val openAPISpec = """
+            Feature: With default
+            
+            Background:
+              Given openapi openapi/post_with_default.yaml
+        """.trimIndent()
+
+        val feature = parseGherkinStringToFeature(openAPISpec, sourceSpecPath)
+
+        try {
+            System.setProperty(Flags.negativeTestingFlag, "true")
+
+            val results: Results = feature.copy(generativeTestingEnabled = true).executeTests(object : TestExecutor {
+                override fun execute(request: HttpRequest): HttpResponse {
+                    val jsonBody = request.body as JSONObjectValue
+                    if(jsonBody.jsonObject.get("id")?.toStringLiteral()?.toIntOrNull() != null)
+                        return HttpResponse(200, body = StringValue("it worked"))
+
+                    return HttpResponse(400, body = parsedJSONObject("""{"data": "information"}"""))
+                }
+
+                override fun setServerState(serverState: Map<String, Value>) {
+                }
+            })
+
+            println(results.report())
+
+            assertThat(results.success()).isTrue
+        } finally {
+            System.clearProperty(Flags.negativeTestingFlag)
+        }
+    }
+
+    @Test
+    fun `400 response in the contract should be used to match a 400 status response in a negative test even when a default response has been declared`() {
+        val openAPISpec = """
+            Feature: With default
+            
+            Background:
+              Given openapi openapi/post_with_default_and_400.yaml
+        """.trimIndent()
+
+        val feature = parseGherkinStringToFeature(openAPISpec, sourceSpecPath)
+
+        try {
+            System.setProperty(Flags.negativeTestingFlag, "true")
+
+            val results: Results = feature.copy(generativeTestingEnabled = true).executeTests(object : TestExecutor {
+                override fun execute(request: HttpRequest): HttpResponse {
+                    val jsonBody = request.body as JSONObjectValue
+                    if(jsonBody.jsonObject.get("id")?.toStringLiteral()?.toIntOrNull() != null)
+                        return HttpResponse(200, body = StringValue("it worked"))
+
+                    return HttpResponse(400, body = parsedJSONObject("""{"error_in_400": "message"}"""))
+                }
+
+                override fun setServerState(serverState: Map<String, Value>) {
+                }
+            })
+
+            println(results.report())
+
+            assertThat(results.success()).isTrue
+        } finally {
+            System.clearProperty(Flags.negativeTestingFlag)
+        }
     }
 }
 

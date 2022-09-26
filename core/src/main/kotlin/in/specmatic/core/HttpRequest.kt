@@ -24,6 +24,9 @@ const val FORM_FIELDS_JSON_KEY = "form-fields"
 const val MULTIPART_FORMDATA_JSON_KEY = "multipart-formdata"
 
 fun urlToQueryParams(uri: URI): Map<String, String> {
+    if(uri.query == null)
+        return emptyMap()
+
     return uri.query.split("&").map {
         val parts = it.split("=".toRegex(), 2)
         Pair(parts[0], parts[1])
@@ -163,7 +166,12 @@ data class HttpRequest(val method: String? = null, val path: String? = null, val
     fun buildRequest(httpRequestBuilder: HttpRequestBuilder) {
         httpRequestBuilder.method = HttpMethod.parse(method as String)
 
-        val listOfExcludedHeaders = HttpHeaders.UnsafeHeadersList.map { it.lowercase() }
+        val listOfExcludedHeaders: List<String> = HttpHeaders.UnsafeHeadersList.plus(arrayOf(
+            HttpHeaders.ContentLength,
+            HttpHeaders.ContentType,
+            HttpHeaders.TransferEncoding,
+            HttpHeaders.Upgrade
+        )).distinct().map { it.lowercase() }
 
         headers
             .map {Triple(it.key.trim(), it.key.trim().lowercase(), it.value.trim())}

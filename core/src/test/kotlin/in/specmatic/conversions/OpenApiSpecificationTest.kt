@@ -288,66 +288,6 @@ Pet:
     }
 
     @Test
-    fun `data structures with trailing underscores but the same underlying name are merged into one`() {
-        val gherkin = """
-            Feature: Test
-              Scenario: Test
-                Given type Data
-                | person1 | (Person)  |
-                | person2 | (Person_) |
-                And type Person
-                | id | (number) |
-                And type Person_
-                | id | (number) |
-                When POST /
-                And request-body (Data)
-                Then status 200
-        """
-
-        val yaml = """
-            ---
-            openapi: 3.0.1
-            info:
-              title: Test
-              version: 1
-            paths:
-              /:
-                post:
-                  summary: Test
-                  parameters: []
-                  requestBody:
-                    content:
-                      application/json:
-                        schema:
-                          ${"$"}ref: '#/components/schemas/Data'
-                  responses:
-                    200:
-                      description: Test
-            components:
-              schemas:
-                Data:
-                  required:
-                  - person1
-                  - person2
-                  properties:
-                    person1:
-                      ${"$"}ref: '#/components/schemas/Person'
-                    person2:
-                      ${"$"}ref: '#/components/schemas/Person'
-                Person:
-                  required:
-                  - id
-                  properties:
-                    id:
-                      type: number
-                  """.trimIndent()
-
-        portableComparisonAcrossBuildEnvironments(
-            openAPIToString(parseGherkinStringToFeature(gherkin).toOpenApi()), yaml
-        )
-    }
-
-    @Test
     fun `programmatically construct OpenAPI YAML for GET with request headers and path and query params`() {
         val feature = parseGherkinStringToFeature(
             """
@@ -3124,95 +3064,6 @@ Scenario: Get product by id
     }
 
     @Test
-    fun `scenario 1 has an object and scenario 2 has the same object with underscores and it is nullable`() {
-        val feature = parseGherkinStringToFeature(
-            """
-            Feature: API
-            
-            Scenario: API 1
-              Given type RequestBody
-              | hello | (Hello) |
-              And type Hello
-              | world | (string) |
-              When POST /data
-              And request-body (RequestBody)
-              Then status 200
-
-            Scenario: API 2
-              Given type RequestBody
-              | hello | (Hello__?) |
-              When POST /data
-              And request-body (RequestBody)
-              Then status 200
-            """.trimIndent()
-        )
-        val openAPI = feature.toOpenApi()
-
-        with(OpenApiSpecification("/file.yaml", openAPI).toFeature()) {
-            assertThat(
-                this.matches(
-                    HttpRequest(
-                        "POST",
-                        "/data",
-                        body = parsedJSON("""{"hello": {"world": "jill"}}""")
-                    ), HttpResponse.OK
-                )
-            ).isTrue
-            assertThat(
-                this.matches(
-                    HttpRequest(
-                        "POST",
-                        "/data",
-                        body = parsedJSON("""{"hello": null}""")
-                    ), HttpResponse.OK
-                )
-            ).isTrue
-        }
-
-        val openAPIYaml = openAPIToString(openAPI)
-        portableComparisonAcrossBuildEnvironments(
-            openAPIYaml,
-            """
-            ---
-            openapi: 3.0.1
-            info:
-              title: API
-              version: 1
-            paths:
-              /data:
-                post:
-                  summary: API 1
-                  parameters: []
-                  requestBody:
-                    content:
-                      application/json:
-                        schema:
-                          ${"$"}ref: '#/components/schemas/Data_RequestBody'
-                  responses:
-                    200:
-                      description: API 1
-            components:
-              schemas:
-                Hello:
-                  required:
-                  - world
-                  properties:
-                    world:
-                      type: string
-                Data_RequestBody:
-                  required:
-                  - hello
-                  properties:
-                    hello:
-                      oneOf:
-                      - properties: {}
-                        nullable: true
-                      - ${"$"}ref: '#/components/schemas/Hello'
-            """.trimIndent()
-        )
-    }
-
-    @Test
     fun `lookup string value in gherkin should result in a string type in yaml`() {
         val feature = parseGherkinStringToFeature(
             """
@@ -5523,7 +5374,7 @@ components:
             """.trimIndent()
 
         val feature = OpenApiSpecification.fromYAML(contractString, "").toFeature()
-        val match: List<Pair<Scenario, Result>> = feature.lookupScenariosWithDeepMatch(
+        val match: List<Pair<Scenario, Result>> = feature.backwardCompatibleLookup(
             HttpRequest(
                 "POST",
                 "/users",
@@ -5535,5 +5386,146 @@ components:
         println(result.reportString())
 
         assertThat(result).isInstanceOf(Result.Success::class.java)
+    }
+
+    @Test
+    fun `two APIs with IDs in the URL should be merged into one API`() {
+        val feature = parseGherkinStringToFeature(
+            """
+            Feature: API
+            
+            Scenario: API 1
+              Given type RequestBody
+              | hello | (string) |
+              When POST /data/10
+              And request-body (RequestBody)
+              Then status 200
+
+            Scenario: API 2
+              Given type RequestBody
+              | hello | (string) |
+              When POST /data/20
+              And request-body (RequestBody)
+              Then status 200
+            """.trimIndent()
+        )
+        val openAPI = feature.toOpenApi()
+
+        with(OpenApiSpecification("/file.yaml", openAPI).toFeature()) {
+            assertThat(
+                this.matches(
+                    HttpRequest(
+                        "POST",
+                        "/data/30",
+                        body = parsedJSON("""{"hello": "Jill"}""")
+                    ), HttpResponse.OK
+                )
+            ).isTrue
+        }
+
+        val openAPIYaml = openAPIToString(openAPI)
+        portableComparisonAcrossBuildEnvironments(
+            openAPIYaml,
+            """
+            ---
+            openapi: 3.0.1
+            info:
+              title: API
+              version: 1
+            paths:
+              /data/{id}:
+                post:
+                  summary: API 1
+                  parameters:
+                  - name: id
+                    in: path
+                    required: true
+                    schema:
+                      type: number
+                  requestBody:
+                    content:
+                      application/json:
+                        schema:
+                          ${"$"}ref: '#/components/schemas/1_RequestBody'
+                  responses:
+                    200:
+                      description: API 1
+            components:
+              schemas:
+                1_RequestBody:
+                  required:
+                  - hello
+                  properties:
+                    hello:
+                      type: string
+              """.trimIndent()
+        )
+    }
+
+    @Test
+    fun `a single API with an ID in the URL should be turn into a URL matcher with an id path param`() {
+        val feature = parseGherkinStringToFeature(
+            """
+            Feature: API
+            
+            Scenario: API 1
+              Given type RequestBody
+              | hello | (string) |
+              When POST /data/10
+              And request-body (RequestBody)
+              Then status 200
+            """.trimIndent()
+        )
+        val openAPI = feature.toOpenApi()
+
+        with(OpenApiSpecification("/file.yaml", openAPI).toFeature()) {
+            assertThat(
+                this.matches(
+                    HttpRequest(
+                        "POST",
+                        "/data/30",
+                        body = parsedJSON("""{"hello": "Jill"}""")
+                    ), HttpResponse.OK
+                )
+            ).isTrue
+        }
+
+        val openAPIYaml = openAPIToString(openAPI)
+        portableComparisonAcrossBuildEnvironments(
+            openAPIYaml,
+            """
+            ---
+            openapi: 3.0.1
+            info:
+              title: API
+              version: 1
+            paths:
+              /data/{id}:
+                post:
+                  summary: API 1
+                  parameters:
+                  - name: id
+                    in: path
+                    required: true
+                    schema:
+                      type: number
+                  requestBody:
+                    content:
+                      application/json:
+                        schema:
+                          ${"$"}ref: '#/components/schemas/1_RequestBody'
+                  responses:
+                    200:
+                      description: API 1
+            components:
+              schemas:
+                1_RequestBody:
+                  required:
+                  - hello
+                  properties:
+                    hello:
+                      type: string
+              """.trimIndent()
+        )
     }
 }

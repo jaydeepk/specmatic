@@ -1,6 +1,19 @@
-#!/bin/sh
+#!/bin/bash
 
-BRANCH=`git rev-parse --abbrev-ref HEAD`
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
+JAVA_VERSION=$(java -version 2>&1)
+
+if [[ "$JAVA_VERSION" == *'1.8.0'* ]]
+then
+	echo √ Using JDK8
+else
+  echo
+  echo Error: JDK version is not 8
+  echo
+  echo To fix this, ensure that the result of "java -version" shows java 1.8.
+  exit 1
+fi
 
 if [ $BRANCH != "main" ]
 then
@@ -22,7 +35,7 @@ then
 	echo To fix this, commit all changes, then trigger the release again.
 	exit 1
 else
-	echo √ Working tree is clean
+	echo √ All files have been committed
 fi
 
 if [ -z "$1" ]
@@ -65,6 +78,11 @@ then
 else
 	echo √ Specified version matches ./version.properties
 fi
+
+echo
+
+echo Pushing to remote
+git push
 
 echo
 

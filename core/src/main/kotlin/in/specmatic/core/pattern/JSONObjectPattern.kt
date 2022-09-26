@@ -37,12 +37,24 @@ data class JSONObjectPattern(override val pattern: Map<String, Pattern> = emptyM
         }
     }
 
+    override fun generateWithAll(resolver: Resolver): Value {
+        return attempt(breadCrumb = "HEADERS") {
+            JSONObjectValue(pattern.filterNot { it.key == "..." }.mapKeys {
+                attempt(breadCrumb = it.key) {
+                    withoutOptionality(it.key)
+                }
+            }.mapValues {
+                it.value.generateWithAll(resolver)
+            })
+        }
+    }
+
     override fun listOf(valueList: List<Value>, resolver: Resolver): Value {
         return JSONArrayValue(valueList)
     }
 
     override fun matches(sampleData: Value?, resolver: Resolver): Result {
-        val resolverWithNullType = withNullPattern(resolver).withUnexpectedKeyCheck(unexpectedKeyCheck)
+        val resolverWithNullType = withNullPattern(resolver)
         if (sampleData !is JSONObjectValue)
             return mismatchResult("JSON object", sampleData, resolver.mismatchMessages)
 
@@ -66,7 +78,7 @@ data class JSONObjectPattern(override val pattern: Map<String, Pattern> = emptyM
         JSONObjectValue(generate(pattern, withNullPattern(resolver)))
 
     override fun newBasedOn(row: Row, resolver: Resolver): List<JSONObjectPattern> =
-        allOrNothingCombinationIn(pattern.minus("...")) { pattern ->
+        allOrNothingCombinationIn(pattern.minus("..."), if(resolver.generativeTestingEnabled) Row() else row) { pattern ->
             newBasedOn(pattern, row, withNullPattern(resolver))
         }.map { toJSONObjectPattern(it.mapKeys { (key, _) ->
             withoutOptionality(key)

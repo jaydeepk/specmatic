@@ -28,7 +28,7 @@ data class TabularPattern(
         if (sampleData !is JSONObjectValue)
             return mismatchResult("JSON object", sampleData, resolver.mismatchMessages)
 
-        val resolverWithNullType = withNullPattern(resolver).withUnexpectedKeyCheck(unexpectedKeyCheck)
+        val resolverWithNullType = withNullPattern(resolver)
 
         val keyErrors: List<Result.Failure> =
             resolverWithNullType.findKeyErrorList(pattern, sampleData.jsonObject).map {
@@ -57,9 +57,20 @@ data class TabularPattern(
         })
     }
 
+    override fun generateWithAll(resolver: Resolver): Value {
+        return attempt(breadCrumb = "HEADERS") {
+            JSONObjectValue(pattern.filterNot { it.key == "..." }.mapKeys {
+                attempt(breadCrumb = it.key) {
+                    withoutOptionality(it.key)
+                }
+            }.mapValues {
+                it.value.generateWithAll(resolver)
+            })
+        }
+    }
     override fun newBasedOn(row: Row, resolver: Resolver): List<Pattern> {
         val resolverWithNullType = withNullPattern(resolver)
-        return allOrNothingCombinationIn(pattern) { pattern ->
+        return allOrNothingCombinationIn(pattern, if(resolver.generativeTestingEnabled) Row() else row) { pattern ->
             newBasedOn(pattern, row, resolverWithNullType)
         }.map {
             toTabularPattern(it.mapKeys { (key, _) ->
@@ -273,10 +284,14 @@ fun <ValueType> forEachKeyCombinationIn(
 
 fun <ValueType> allOrNothingCombinationIn(
     patternMap: Map<String, ValueType>,
+    row: Row = Row(),
     creator: (Map<String, ValueType>) -> List<Map<String, ValueType>>
 ): List<Map<String, ValueType>> {
     val keyLists = if (patternMap.keys.any { isOptional(it) }) {
-        listOf(patternMap.keys, patternMap.keys.filter { k -> !isOptional(k) })
+        val nothingList: Set<String> = patternMap.keys.filter { k -> !isOptional(k) || row.containsField(withoutOptionality(k)) }.toSet()
+        val allList: Set<String> = patternMap.keys
+
+        listOf(allList, nothingList).distinct()
     } else {
         listOf(patternMap.keys)
     }

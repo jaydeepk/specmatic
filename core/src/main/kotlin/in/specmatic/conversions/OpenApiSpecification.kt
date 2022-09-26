@@ -53,7 +53,7 @@ class OpenApiSpecification(private val openApiFile: String, val openApi: OpenAPI
         }
 
         fun fromYAML(yamlContent: String, filePath: String): OpenApiSpecification {
-            val parseResult: SwaggerParseResult = OpenAPIV3Parser().readContents(yamlContent, null, resolveExternalReferences())
+            val parseResult: SwaggerParseResult = OpenAPIV3Parser().readContents(yamlContent, null, resolveExternalReferences(), filePath)
             val openApi: OpenAPI? = parseResult.openAPI
 
             if(openApi == null) {
@@ -62,7 +62,8 @@ class OpenApiSpecification(private val openApiFile: String, val openApi: OpenAPI
                 parseResult.messages.filterNotNull().let {
                     if(it.isNotEmpty()) {
                         val parserMessages = parseResult.messages.joinToString(System.lineSeparator())
-                        logger.log("Parser errors:\n${parserMessages.prependIndent("  ")}")
+                        logger.log("Error parsing file $filePath")
+                        logger.log(parserMessages.prependIndent("  "))
                     }
                 }
 
@@ -76,6 +77,10 @@ class OpenApiSpecification(private val openApiFile: String, val openApi: OpenAPI
     }
 
     val patterns = mutableMapOf<String, Pattern>()
+
+    fun isOpenAPI31(): Boolean {
+        return openApi.openapi.startsWith("3.1")
+    }
 
     fun toFeature(): Feature {
         val name = File(openApiFile).name
@@ -228,7 +233,7 @@ class OpenApiSpecification(private val openApiFile: String, val openApi: OpenAPI
                         when {
                             requestExamples.isNotEmpty() -> Row(
                                 requestExamples.keys.toList(),
-                                requestExamples.values.toList().map { it.toString() })
+                                requestExamples.values.toList().map { value: Any? -> value?.toString() ?: "" })
                             else -> Row()
                         }
                     }
@@ -239,8 +244,28 @@ class OpenApiSpecification(private val openApiFile: String, val openApi: OpenAPI
                         val scenarioName =
                             scenarioName(operation, response, httpRequestPattern, null)
 
+                        val scenarioDetails = object: ScenarioDetailsForResult {
+                            override val ignoreFailure: Boolean
+                                get() = false
+                            override val name: String
+                                get() = scenarioName
+                            override val method: String
+                                get() = httpRequestPattern.method ?: ""
+                            override val path: String
+                                get() = httpRequestPattern.urlMatcher?.path ?: ""
+                            override val status: Int
+                                get() = httpResponsePattern.status
+                            override val requestTestDescription: String
+                                get() = httpRequestPattern.testDescription()
+                        }
+
                         specmaticExampleRows.forEach { row ->
-                            httpRequestPattern.newBasedOn(row, Resolver(newPatterns = this.patterns).copy(mismatchMessages = Scenario.ContractAndRowValueMismatch))
+                            scenarioBreadCrumb(scenarioDetails) {
+                                httpRequestPattern.newBasedOn(
+                                    row,
+                                    Resolver(newPatterns = this.patterns).copy(mismatchMessages = Scenario.ContractAndRowValueMismatch)
+                                )
+                            }
                         }
 
                         val ignoreFailure = operation.tags.orEmpty().map { it.trim() }.contains("WIP")
@@ -313,12 +338,10 @@ class OpenApiSpecification(private val openApiFile: String, val openApi: OpenAPI
         status: String,
         headersMap: Map<String, Pattern>
     ): List<Triple<ApiResponse, MediaType, HttpResponsePattern>> {
-        if(status == "default") return emptyList()
-
         if(response.content == null) {
             val responsePattern = HttpResponsePattern(
                 headersPattern = HttpHeadersPattern(headersMap),
-                status = status.toInt()
+                status = status.toIntOrNull() ?: DEFAULT_RESPONSE_CODE
             )
 
             return listOf(Triple(response, MediaType(), responsePattern))
@@ -327,7 +350,7 @@ class OpenApiSpecification(private val openApiFile: String, val openApi: OpenAPI
         return response.content.map { (contentType, mediaType) ->
             val responsePattern = HttpResponsePattern(
                 headersPattern = HttpHeadersPattern(headersMap),
-                status = status.toInt(),
+                status = if(status == "default") 1000 else status.toInt(),
                 body = when (contentType) {
                     "application/xml" -> toXMLPattern(mediaType)
                     else -> toSpecmaticPattern(mediaType)
@@ -342,6 +365,10 @@ class OpenApiSpecification(private val openApiFile: String, val openApi: OpenAPI
         path: String, httpMethod: String, operation: Operation
     ): List<HttpRequestPattern> {
 
+        val contractSecuritySchemes: Map<String, OpenAPISecurityScheme> = openApi.components?.securitySchemes?.mapValues { (_, scheme) ->
+            toSecurityScheme(scheme)
+        } ?: emptyMap()
+
         val parameters = operation.parameters
 
         val headersMap = parameters.orEmpty().filterIsInstance(HeaderParameter::class.java).map {
@@ -350,48 +377,13 @@ class OpenApiSpecification(private val openApiFile: String, val openApi: OpenAPI
 
         val securityQueryParams = mutableSetOf<String>()
 
-        if (openApi.components != null && !openApi.components.securitySchemes.isNullOrEmpty()) {
-            if (openApi.components.securitySchemes.toList().any { securityScheme ->
-                    notBearerAuth(securityScheme) && unsupportedApiKeyAuth(securityScheme)
-            })
-                throw ContractException("Specmatic only supports bearer and api key authentication (header, query) scheme at the moment")
-
-            val bearerAuthSecuritySchemeName = openApi.components.securitySchemes.toList().findLast { securityScheme ->
-                securityScheme.second.scheme == BEARER_SECURITY_SCHEME
-            }?.first
-
-            if (!bearerAuthSecuritySchemeName.isNullOrEmpty()) {
-                if (doSecurityRequirementsMatch(
-                        operation.security, bearerAuthSecuritySchemeName
-                    ) || doSecurityRequirementsMatch(
-                        openApi.security, bearerAuthSecuritySchemeName
-                    )
-                ) headersMap[AUTHORIZATION] = StringPattern()
-            }
-
-            openApi.components.securitySchemes.toList().filter { securityScheme ->
-                securityScheme.second.type == SecurityScheme.Type.APIKEY
-            }.forEach { (apiKeySecuritySchemeName, apiKeySecurityScheme) ->
-                if(!apiKeySecuritySchemeName.isNullOrEmpty()) {
-                    if(doSecurityRequirementsMatch(operation.security, apiKeySecuritySchemeName) ||
-                            doSecurityRequirementsMatch(openApi.security, apiKeySecuritySchemeName)) {
-                                when(apiKeySecurityScheme.`in`) {
-                                    SecurityScheme.In.HEADER ->
-                                        headersMap["${apiKeySecurityScheme.name}?"] = StringPattern()
-                                    SecurityScheme.In.QUERY ->
-                                        securityQueryParams.add(apiKeySecurityScheme.name)
-                                    else ->
-                                        throw ContractException("Only Header and Query API Key security schemes are supported at the moment")
-                                }
-                            }
-                }
-            }
-        }
+        val operationSecuritySchemes: List<OpenAPISecurityScheme> =
+            operationSecuritySchemes(operation, contractSecuritySchemes)
 
         val urlMatcher = toURLMatcherWithOptionalQueryParams(path, securityQueryParams)
         val headersPattern = HttpHeadersPattern(headersMap)
         val requestPattern = HttpRequestPattern(
-            urlMatcher = urlMatcher, method = httpMethod, headersPattern = headersPattern
+            urlMatcher = urlMatcher, method = httpMethod, headersPattern = headersPattern, securitySchemes = operationSecuritySchemes
         )
 
         return when (operation.requestBody) {
@@ -427,6 +419,36 @@ class OpenApiSpecification(private val openApiFile: String, val openApi: OpenAPI
                 }
             }
         }
+    }
+
+    private fun operationSecuritySchemes(
+        operation: Operation,
+        contractSecuritySchemes: Map<String, OpenAPISecurityScheme>
+    ): List<OpenAPISecurityScheme> {
+        val globalSecurityRequirements: List<String> =
+            openApi.security?.map { it.keys.toList() }?.flatten() ?: emptyList()
+        val operationSecurityRequirements: List<String> =
+            operation.security?.map { it.keys.toList() }?.flatten() ?: emptyList()
+        val operationSecurityRequirementsSuperSet: List<String> =
+            globalSecurityRequirements.plus(operationSecurityRequirements).distinct()
+        val operationSecuritySchemes: List<OpenAPISecurityScheme> =
+            contractSecuritySchemes.filter { (name, scheme) -> name in operationSecurityRequirementsSuperSet }.values.toList()
+        return operationSecuritySchemes
+    }
+
+    private fun toSecurityScheme(securityScheme: SecurityScheme): OpenAPISecurityScheme {
+        if(securityScheme.scheme == BEARER_SECURITY_SCHEME)
+            return BearerSecurityScheme()
+
+        if(securityScheme.type == SecurityScheme.Type.APIKEY) {
+            if(securityScheme.`in` == SecurityScheme.In.HEADER)
+                return APIKeyInHeaderSecurityScheme(securityScheme.name)
+
+            if(securityScheme.`in` == SecurityScheme.In.QUERY)
+                return APIKeyInQueryParamSecurityScheme(securityScheme.name)
+        }
+
+        throw ContractException("Specmatic only supports bearer and api key authentication (header, query) security schemes at the moment")
     }
 
     private fun unsupportedApiKeyAuth(securityScheme: Pair<String, SecurityScheme>): Boolean {
